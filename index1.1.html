@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>表格数据处理工具</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#3b82f6',
+                        secondary: '#10b981',
+                        neutral: '#64748b',
+                        fnsku: '#eff6ff', // FNSKU行背景色
+                    }
+                }
+            }
+        }
+    </script>
+    <style type="text/tailwindcss">
+        @layer utilities {
+            .table-cell-hover {
+                @apply hover:bg-blue-50 transition-colors;
+            }
+            .btn-active {
+                @apply transform scale-95;
+            }
+            .fnsku-row {
+                @apply bg-fnsku;
+            }
+        }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen py-6">
+    <div class="container mx-auto px-4 max-w-6xl">
+        <header class="mb-6 text-center">
+            <h1 class="text-2xl md:text-3xl font-bold text-gray-800 mb-2">表格数据处理工具</h1>
+            <p class="text-gray-600">粘贴数据自动转换为表格，支持清除0值并复制为Excel格式</p>
+        </header>
+
+        <div class="bg-white rounded-xl shadow-md p-5 mb-6">
+            <!-- 操作按钮（顶部） -->
+            <div class="flex flex-wrap gap-3 mb-5">
+                <button 
+                    id="clearZerosBtn" 
+                    class="bg-secondary hover:bg-secondary/90 text-white px-5 py-2.5 rounded-lg flex items-center gap-2 transition-all shadow-sm hover:shadow active:btn-active"
+                >
+                    <i class="fa fa-eraser"></i> 清除0值
+                </button>
+                <button 
+                    id="copyBtn" 
+                    class="bg-primary hover:bg-primary/90 text-white px-5 py-2.5 rounded-lg flex items-center gap-2 transition-all shadow-sm hover:shadow active:btn-active"
+                >
+                    <i class="fa fa-copy"></i> 复制为Excel格式
+                </button>
+                <button 
+                    id="resetBtn" 
+                    class="bg-gray-200 hover:bg-gray-300 text-gray-700 px-5 py-2.5 rounded-lg flex items-center gap-2 transition-all active:btn-active"
+                >
+                    <i class="fa fa-refresh"></i> 重置
+                </button>
+                <div id="copyStatus" class="hidden ml-2 flex items-center text-sm"></div>
+            </div>
+
+            <!-- 输入区域 -->
+            <div class="mb-5">
+                <label for="sourceInput" class="block text-sm font-medium text-gray-700 mb-2">输入框 - 粘贴表格数据：</label>
+                <textarea 
+                    id="sourceInput" 
+                    class="w-full h-36 p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all resize-none"
+                    placeholder="在此粘贴表格数据，会自动转换为带行列的表格..."
+                ></textarea>
+            </div>
+
+            <!-- 表格显示区域（可左右滑动） -->
+            <div class="mb-2">
+                <label class="block text-sm font-medium text-gray-700 mb-2">表格预览（可左右滑动查看完整内容）：</label>
+                <div class="overflow-x-auto" style="padding-bottom: 4px;">
+                    <div id="tableOutput" class="border border-gray-200 rounded-lg min-w-full max-h-96 overflow-y-auto">
+                        <div class="flex items-center justify-center h-40 text-gray-500 border-b border-gray-200">
+                            粘贴数据后表格将显示在这里
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 状态提示 -->
+        <div id="statusMessage" class="hidden fixed bottom-4 right-4 px-4 py-3 rounded-lg shadow-lg z-10"></div>
+    </div>
+
+    <script>
+        // 获取DOM元素
+        const sourceInput = document.getElementById('sourceInput');
+        const tableOutput = document.getElementById('tableOutput');
+        const clearZerosBtn = document.getElementById('clearZerosBtn');
+        const copyBtn = document.getElementById('copyBtn');
+        const resetBtn = document.getElementById('resetBtn');
+        const statusMessage = document.getElementById('statusMessage');
+        const copyStatus = document.getElementById('copyStatus');
+
+        // 存储表格数据和行状态
+        let tableData = [];
+        let rowStatus = []; // 存储每行是否包含FNSKU的状态
+
+        // 显示状态消息
+        function showStatus(message, isError = false) {
+            statusMessage.textContent = message;
+            statusMessage.className = isError 
+                ? 'fixed bottom-4 right-4 px-4 py-3 rounded-lg shadow-lg z-10 bg-red-50 text-red-600 border border-red-100'
+                : 'fixed bottom-4 right-4 px-4 py-3 rounded-lg shadow-lg z-10 bg-green-50 text-green-600 border border-green-100';
+            
+            clearTimeout(window.statusTimeout);
+            window.statusTimeout = setTimeout(() => {
+                statusMessage.classList.add('hidden');
+            }, 3000);
+        }
+
+        // 检查单元格是否包含FNSKU数据
+        function hasFNSKU(cellValue) {
+            // 简单判断：包含"FNSKU"字符串或看起来像FNSKU格式的内容
+            return cellValue && (
+                cellValue.includes('FNSKU') || 
+                /^[A-Z0-9]{10,15}$/.test(cellValue) // 假设FNSKU是10-15位字母数字组合
+            );
+        }
+
+        // 将输入文本转换为表格数据
+        function parseTableData(text) {
+            if (!text.trim()) return [];
+            
+            // 按行分割
+            const rows = text.split(/\r?\n/).filter(row => row.trim() !== '');
+            
+            // 按制表符或多个空格分割列（处理表格格式）
+            const data = rows.map(row => {
+                return row.split(/\t| {2,}/).map(cell => cell.trim());
+            });
+            
+            // 更新行状态（检查第一列是否包含FNSKU）
+            rowStatus = data.map(row => row.length > 0 && hasFNSKU(row[0]));
+            
+            return data;
+        }
+
+        // 渲染表格到输出区域
+        function renderTable() {
+            if (tableData.length === 0) {
+                tableOutput.innerHTML = `
+                    <div class="flex items-center justify-center h-40 text-gray-500 border-b border-gray-200">
+                        粘贴数据后表格将显示在这里
+                    </div>
+                `;
+                return;
+            }
+
+            // 创建表格元素
+            let tableHtml = `
+                <table class="min-w-full divide-y divide-gray-200">
+                    <tbody class="bg-white divide-y divide-gray-200">
+            `;
+
+            // 生成表格行和列
+            tableData.forEach((row, rowIndex) => {
+                // 检查是否需要标记为FNSKU行
+                const isFNSKURow = rowStatus[rowIndex] || false;
+                const rowClass = isFNSKURow 
+                    ? 'fnsku-row' 
+                    : (rowIndex % 2 === 0 ? 'bg-gray-50' : 'bg-white');
+                
+                tableHtml += `<tr class="${rowClass}">`;
+                
+                row.forEach(cell => {
+                    tableHtml += `
+                        <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-700 border-r border-gray-100 last:border-r-0 table-cell-hover">
+                            ${cell || ''}
+                        </td>
+                    `;
+                });
+                
+                row.forEach((_, colIndex) => {
+                    // 确保表格列数一致，补全缺失的单元格
+                    if (colIndex >= row.length) {
+                        tableHtml += `
+                            <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-700 border-r border-gray-100 last:border-r-0 table-cell-hover">
+                            </td>
+                        `;
+                    }
+                });
+                
+                tableHtml += `</tr>`;
+            });
+
+            tableHtml += `
+                    </tbody>
+                </table>
+            `;
+
+            tableOutput.innerHTML = tableHtml;
+        }
+
+        // 监听输入变化，自动转换为表格
+        sourceInput.addEventListener('input', () => {
+            const inputText = sourceInput.value;
+            tableData = parseTableData(inputText);
+            renderTable();
+        });
+
+        // 清除所有0值
+        clearZerosBtn.addEventListener('click', () => {
+            if (tableData.length === 0) {
+                showStatus('请先粘贴表格数据', true);
+                return;
+            }
+
+            // 遍历表格数据，清除0值
+            tableData = tableData.map(row => {
+                return row.map(cell => {
+                    // 严格匹配数值0
+                    return cell === '0' ? '' : cell;
+                });
+            });
+
+            renderTable();
+            showStatus('已成功清除所有0值');
+        });
+
+        // 复制为Excel格式（带FNSKU标记）
+        copyBtn.addEventListener('click', () => {
+            if (tableData.length === 0) {
+                showStatus('请先粘贴表格数据', true);
+                return;
+            }
+
+            // 创建一个临时表格用于复制（支持样式）
+            const tempTable = document.createElement('table');
+            tempTable.style.position = 'fixed';
+            tempTable.style.opacity = '0';
+            
+            // 创建表格内容和样式
+            let tableHtml = '<tbody>';
+            tableData.forEach((row, rowIndex) => {
+                const isFNSKURow = rowStatus[rowIndex] || false;
+                tableHtml += `<tr style="${isFNSKURow ? 'background-color: #eff6ff;' : ''}">`;
+                
+                row.forEach(cell => {
+                    tableHtml += `<td style="padding: 2px 4px; border: 1px solid #eee;">${cell || ''}</td>`;
+                });
+                
+                tableHtml += '</tr>';
+            });
+            tableHtml += '</tbody>';
+            
+            tempTable.innerHTML = tableHtml;
+            document.body.appendChild(tempTable);
+            
+            // 选择并复制表格
+            const range = document.createRange();
+            range.selectNode(tempTable);
+            window.getSelection().removeAllRanges();
+            window.getSelection().addRange(range);
+            
+            try {
+                const successful = document.execCommand('copy');
+                if (successful) {
+                    showStatus('已复制为Excel格式（包含FNSKU标记）');
+                    
+                    // 显示复制成功的图标
+                    copyStatus.innerHTML = '<i class="fa fa-check text-green-500 mr-1"></i> 已复制';
+                    copyStatus.classList.remove('hidden', 'text-red-500');
+                    copyStatus.classList.add('text-green-500');
+                } else {
+                    throw new Error('复制命令执行失败');
+                }
+            } catch (err) {
+                showStatus('复制失败，请手动复制', true);
+                console.error('复制失败:', err);
+                
+                copyStatus.innerHTML = '<i class="fa fa-times text-red-500 mr-1"></i> 复制失败';
+                copyStatus.classList.remove('hidden', 'text-green-500');
+                copyStatus.classList.add('text-red-500');
+            } finally {
+                document.body.removeChild(tempTable);
+                window.getSelection().removeAllRanges();
+                
+                setTimeout(() => {
+                    copyStatus.classList.add('hidden');
+                }, 2000);
+            }
+        });
+
+        // 重置功能
+        resetBtn.addEventListener('click', () => {
+            sourceInput.value = '';
+            tableData = [];
+            rowStatus = [];
+            renderTable();
+            showStatus('已重置');
+            copyStatus.classList.add('hidden');
+        });
+    </script>
+</body>
+</html>
